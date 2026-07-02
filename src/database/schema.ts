@@ -182,3 +182,49 @@ export const userBankItems = sqliteTable("user_bank_items", {
 
 export type UserBankItemRow = typeof userBankItems.$inferSelect;
 export type NewUserBankItemRow = typeof userBankItems.$inferInsert;
+
+export const guilds = sqliteTable("guilds", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type GuildRow = typeof guilds.$inferSelect;
+export type NewGuildRow = typeof guilds.$inferInsert;
+
+export const userGuildMemberships = sqliteTable("user_guild_memberships", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  guildId: integer("guild_id")
+    .notNull()
+    .references(() => guilds.id),
+  role: text("role").notNull().default("member"),
+  joinedAt: text("joined_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type UserGuildMembershipRow = typeof userGuildMemberships.$inferSelect;
+export type NewUserGuildMembershipRow = typeof userGuildMemberships.$inferInsert;
+
+export const userActionModifiers = sqliteTable("user_action_modifiers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  source: text("source").notNull(),
+  action: text("action").notNull(),
+  modifierType: text("modifier_type").notNull(),
+  payload: text("payload").notNull().default("{}"),
+  remainingUses: integer("remaining_uses").notNull().default(1),
+  expiresAt: text("expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type UserActionModifierRow = typeof userActionModifiers.$inferSelect;
+export type NewUserActionModifierRow = typeof userActionModifiers.$inferInsert;

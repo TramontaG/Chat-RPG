@@ -1,6 +1,11 @@
 import { db } from "../../database/client";
 import type { UserBankItemRow, UserBankRow } from "../../database/schema";
-import { addItemToInventory, removeItemFromInventory } from "../inventory/inventory.service";
+import {
+  addItemToInventory,
+  getInventorySlotOrThrow,
+  removeInventorySlotQuantity,
+  removeItemFromInventory,
+} from "../inventory/inventory.service";
 import { getActiveItemOrThrow } from "../items/items.service";
 import { BankRepository } from "./bank.repository";
 
@@ -9,6 +14,20 @@ const bankRepository = new BankRepository(db);
 function assertPositiveQuantity(quantity: number): void {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error("Quantity must be a positive integer.");
+  }
+}
+
+export class BankSlotNotFoundError extends Error {
+  constructor(slotId: number) {
+    super(`Bank slot not found: ${slotId}`);
+    this.name = "BankSlotNotFoundError";
+  }
+}
+
+export class InsufficientGoldError extends Error {
+  constructor(required: number, available: number) {
+    super(`Insufficient gold. Required: ${required}. Available: ${available}.`);
+    this.name = "InsufficientGoldError";
   }
 }
 
@@ -46,13 +65,29 @@ export async function addGoldToBank(userId: number, amount: number): Promise<voi
   await bankRepository.addGold(userId, amount, new Date().toISOString());
 }
 
-export async function addItemToBank(userId: number, itemId: string, quantity = 1): Promise<void> {
+export async function spendGoldFromBank(userId: number, amount: number): Promise<void> {
+  assertPositiveQuantity(amount);
+  const bank = await ensureBank(userId);
+
+  if (bank.gold < amount) {
+    throw new InsufficientGoldError(amount, bank.gold);
+  }
+
+  await bankRepository.spendGold(userId, amount, new Date().toISOString());
+}
+
+export async function addItemToBank(
+  userId: number,
+  itemId: string,
+  quantity = 1,
+  metadata: string | null = null,
+): Promise<void> {
   assertPositiveQuantity(quantity);
 
   const item = await getActiveItemOrThrow(itemId);
   await ensureBank(userId);
 
-  if (item.stackable) {
+  if (item.stackable && metadata === null) {
     const existingStack = await bankRepository.findStack(userId, itemId);
 
     if (existingStack) {
@@ -65,7 +100,7 @@ export async function addItemToBank(userId: number, itemId: string, quantity = 1
       userId,
       itemId,
       quantity,
-      metadata: null,
+      metadata,
       createdAt: now,
       updatedAt: now,
     });
@@ -78,7 +113,7 @@ export async function addItemToBank(userId: number, itemId: string, quantity = 1
       userId,
       itemId,
       quantity: 1,
-      metadata: null,
+      metadata,
       createdAt: now,
       updatedAt: now,
     })),
@@ -130,6 +165,40 @@ export async function removeItemFromBank(
   return true;
 }
 
+export async function getBankSlotOrThrow(userId: number, bankSlotId: number): Promise<UserBankItemRow> {
+  await ensureBank(userId);
+  const slot = await bankRepository.findItemById(userId, bankSlotId);
+
+  if (!slot) {
+    throw new BankSlotNotFoundError(bankSlotId);
+  }
+
+  return slot;
+}
+
+export async function removeBankSlotQuantity(
+  userId: number,
+  bankSlotId: number,
+  quantity = 1,
+): Promise<UserBankItemRow | null> {
+  assertPositiveQuantity(quantity);
+  await ensureBank(userId);
+
+  const slot = await bankRepository.findItemById(userId, bankSlotId);
+
+  if (!slot || slot.quantity < quantity) {
+    return null;
+  }
+
+  if (slot.quantity === quantity) {
+    await bankRepository.deleteItemById(slot.id);
+  } else {
+    await bankRepository.decreaseItemQuantity(slot.id, quantity, new Date().toISOString());
+  }
+
+  return slot;
+}
+
 export async function depositInventoryItemToBank(
   userId: number,
   itemId: string,
@@ -142,6 +211,21 @@ export async function depositInventoryItemToBank(
   }
 
   await addItemToBank(userId, itemId, quantity);
+  return true;
+}
+
+export async function depositInventorySlotToBank(
+  userId: number,
+  inventorySlotId: number,
+  quantity = 1,
+): Promise<boolean> {
+  const slot = await removeInventorySlotQuantity(userId, inventorySlotId, quantity);
+
+  if (!slot) {
+    return false;
+  }
+
+  await addItemToBank(userId, slot.itemId, quantity, slot.metadata);
   return true;
 }
 
@@ -160,6 +244,29 @@ export async function withdrawBankItemToInventory(
 
   if (!removedFromBank) {
     await removeItemFromInventory(userId, itemId, quantity);
+    return false;
+  }
+
+  return true;
+}
+
+export async function withdrawBankSlotToInventory(
+  userId: number,
+  bankSlotId: number,
+  quantity = 1,
+): Promise<boolean> {
+  const slot = await getBankSlotOrThrow(userId, bankSlotId);
+  const metadata = slot.metadata === null ? undefined : JSON.parse(slot.metadata);
+  const addResult = await addItemToInventory(userId, slot.itemId, quantity, metadata);
+
+  if (!addResult.added) {
+    return false;
+  }
+
+  const removedFromBank = await removeBankSlotQuantity(userId, bankSlotId, quantity);
+
+  if (!removedFromBank) {
+    await removeItemFromInventory(userId, slot.itemId, quantity);
     return false;
   }
 

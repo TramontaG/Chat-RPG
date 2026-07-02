@@ -35,6 +35,9 @@ beforeEach(() => {
   databaseClient.db.delete(schema.userSkills).run();
   databaseClient.db.delete(schema.userAttributePoints).run();
   databaseClient.db.delete(schema.userAttributes).run();
+  databaseClient.db.delete(schema.userActionModifiers).run();
+  databaseClient.db.delete(schema.userGuildMemberships).run();
+  databaseClient.db.delete(schema.guilds).run();
   databaseClient.sqlite.exec(`
     DELETE FROM users
     WHERE id = ${testUserId} OR username = 'progression-test-user';

@@ -1,5 +1,16 @@
-import { addItemToInventory, type AddInventoryItemResult } from "../inventory/inventory.service";
-import { upsertItemDefinition } from "../items/items.service";
+import {
+  addItemToInventory,
+  listInventoryItems,
+  removeItemFromInventory,
+  type AddInventoryItemResult,
+} from "../inventory/inventory.service";
+import {
+  consumeActionModifiers,
+  createActionModifier,
+  listActiveActionModifiers,
+} from "../action-modifiers/action-modifiers.service";
+import type { UserActionModifierRow } from "../../database/schema";
+import { getItemOrThrow, listItems, upsertItemDefinition } from "../items/items.service";
 import {
   applyActionProgressionRewards,
   getUserProgression,
@@ -11,6 +22,7 @@ import {
   type FishingRandomEventDefinition,
   type FishingRandomEventProbability,
 } from "./fishing.random-events";
+import type { BaitEffects } from "../shop/bait.items";
 import {
   FISHING_FISH_TABLE,
   FISHING_JUNK_TABLE,
@@ -67,6 +79,14 @@ export type FishingRandomEventResult =
       };
     };
 
+export type FishingBaitUseResult = {
+  itemId: string;
+  name: string;
+  effects: BaitEffects;
+  consumed: number;
+  gained: number;
+};
+
 export type FishingDropProbability = {
   itemId: string;
   name: string;
@@ -89,6 +109,12 @@ export type FishingQualityProbability = {
 
 export type FishingProbabilities = {
   levels: FishingLevels;
+  activeModifiers: UserActionModifierRow[];
+  bait: null | {
+    itemId: string;
+    name: string;
+    effects: BaitEffects;
+  };
   categoryProbabilities: FishingCategoryProbabilities;
   drops: {
     fish: FishingDropProbability[];
@@ -104,6 +130,7 @@ export type FishingProbabilities = {
 
 export type FishingActionResult = {
   outcome: "caught" | "no_catch";
+  bait: FishingBaitUseResult;
   category: FishingDropCategory;
   item: null | {
     id: string;
@@ -128,6 +155,10 @@ export type FishingActionResult = {
     multiplier: number;
   };
   randomEvent: FishingRandomEventResult;
+  actionModifiers: {
+    applied: UserActionModifierRow[];
+    created: UserActionModifierRow[];
+  };
   inventory: FishingInventoryResult;
   resultModifiers: {
     fishingLevel: number;
@@ -144,6 +175,48 @@ const FISHING_CURVE_WIDTH = 18;
 const MIN_CURVE_FACTOR = 0.02;
 const MIN_WEIGHT = 0.000001;
 const QUALITY_WEIGHT_MULTIPLIER = 0.35;
+
+export type FishingActionInput = {
+  baitItemId?: string;
+  baitName?: string;
+};
+
+export class FishingBaitRequiredError extends Error {
+  constructor() {
+    super("Fishing requires bait.");
+    this.name = "FishingBaitRequiredError";
+  }
+}
+
+export class FishingBaitAmbiguousError extends Error {
+  constructor() {
+    super("Multiple bait types found. Specify baitItemId or baitName.");
+    this.name = "FishingBaitAmbiguousError";
+  }
+}
+
+export class FishingBaitNotFoundError extends Error {
+  constructor() {
+    super("Bait not found in player inventory.");
+    this.name = "FishingBaitNotFoundError";
+  }
+}
+
+type FishingActionModifierEffects = {
+  fishChanceMultiplier: number;
+  efficiencyMultiplier: number;
+  minimumQuality: FishQualityDefinition["quality"] | null;
+  rareFishWeightBonus: number;
+};
+
+function getDefaultActionModifierEffects(): FishingActionModifierEffects {
+  return {
+    fishChanceMultiplier: 1,
+    efficiencyMultiplier: 1,
+    minimumQuality: null,
+    rareFishWeightBonus: 0,
+  };
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -170,16 +243,21 @@ function weightedPick<T>(options: WeightedOption<T>[], rng: Rng): WeightedOption
   return fallback;
 }
 
-export function calculateFishingCategoryProbabilities(luckLevel: number): FishingCategoryProbabilities {
+export function calculateFishingCategoryProbabilities(
+  luckLevel: number,
+  baitEffects: BaitEffects = {},
+): FishingCategoryProbabilities {
   const luckAboveBaseline = Math.max(0, luckLevel - 1);
   const junkToTreasureShift = Math.min(0.06, luckAboveBaseline * 0.00055);
-  const junk = Math.max(0.005, 0.075 - junkToTreasureShift);
-  const treasure = 0.025 + junkToTreasureShift * 0.75;
+  const junk = Math.max(0.001, 0.075 - junkToTreasureShift - (baitEffects.junkChanceReduction ?? 0));
+  const treasure = Math.min(0.75, 0.025 + junkToTreasureShift * 0.75 + (baitEffects.treasureChanceBonus ?? 0));
+  const fish = Math.max(0.001, 1 - junk - treasure);
+  const total = fish + junk + treasure;
 
   return {
-    fish: 1 - junk - treasure,
-    junk,
-    treasure,
+    fish: fish / total,
+    junk: junk / total,
+    treasure: treasure / total,
   };
 }
 
@@ -209,6 +287,7 @@ export function calculateFishingDropWeight(
   entry: FishingDropEntry,
   levels: { fishingLevel: number; dexterityLevel: number; luckLevel: number },
   curveWidth = FISHING_CURVE_WIDTH,
+  baitEffects: BaitEffects = {},
 ): number {
   const distance = levels.fishingLevel - entry.targetLevel;
   const curveFactor = Math.exp(-(distance * distance) / (2 * curveWidth * curveWidth));
@@ -216,10 +295,11 @@ export function calculateFishingDropWeight(
   const targetLevelFactor = entry.targetLevel / 100;
   const dexterityBonus = Math.max(0, levels.dexterityLevel - 1) * 0.004 * targetLevelFactor;
   const luckBonus = Math.max(0, levels.luckLevel - 1) * 0.0025 * targetLevelFactor;
+  const rareFishBonus = (baitEffects.rareFishWeightBonus ?? 0) * targetLevelFactor;
 
   return Math.max(
     MIN_WEIGHT,
-    entry.baseWeight * neverImpossibleCurveFactor * (1 + dexterityBonus + luckBonus),
+    entry.baseWeight * neverImpossibleCurveFactor * (1 + dexterityBonus + luckBonus + rareFishBonus),
   );
 }
 
@@ -227,11 +307,12 @@ function calculateDropProbabilitiesForCategory(
   category: FishingDropCategory,
   levels: FishingLevels,
   categoryProbability: number,
+  baitEffects: BaitEffects = {},
 ): FishingDropProbability[] {
   const table = getTableForCategory(category);
   const weightedEntries = table.map((entry) => ({
     entry,
-    weight: calculateFishingDropWeight(entry, levels),
+    weight: calculateFishingDropWeight(entry, levels, FISHING_CURVE_WIDTH, baitEffects),
   }));
   const totalWeight = weightedEntries.reduce((sum, entry) => sum + entry.weight, 0);
 
@@ -392,33 +473,344 @@ function getProgressionFishingLevels(progression: Awaited<ReturnType<typeof getU
   };
 }
 
-export async function getFishingProbabilities(userId: number): Promise<FishingProbabilities> {
+function parseBaitEffects(metadata: string): BaitEffects {
+  const parsedMetadata = JSON.parse(metadata) as { baitEffects?: BaitEffects };
+
+  return parsedMetadata.baitEffects ?? {};
+}
+
+function parseModifierPayload(modifier: UserActionModifierRow): Record<string, unknown> {
+  return JSON.parse(modifier.payload) as Record<string, unknown>;
+}
+
+function getFishingActionModifierEffects(
+  modifiers: UserActionModifierRow[],
+): FishingActionModifierEffects {
+  const effects = getDefaultActionModifierEffects();
+
+  for (const modifier of modifiers) {
+    const payload = parseModifierPayload(modifier);
+
+    if (modifier.modifierType === "fish_chance_multiplier") {
+      const multiplier = payload.multiplier;
+
+      if (typeof multiplier === "number") {
+        effects.fishChanceMultiplier *= multiplier;
+      }
+    }
+
+    if (modifier.modifierType === "efficiency_multiplier") {
+      const multiplier = payload.multiplier;
+
+      if (typeof multiplier === "number") {
+        effects.efficiencyMultiplier *= multiplier;
+      }
+    }
+
+    if (modifier.modifierType === "minimum_fish_quality") {
+      const quality = payload.quality;
+
+      if (typeof quality === "string" && FISH_QUALITIES.some((candidate) => candidate.quality === quality)) {
+        effects.minimumQuality = quality as FishQualityDefinition["quality"];
+      }
+    }
+
+    if (modifier.modifierType === "rare_fish_weight_bonus") {
+      const bonus = payload.bonus;
+
+      if (typeof bonus === "number") {
+        effects.rareFishWeightBonus += bonus;
+      }
+    }
+  }
+
+  return effects;
+}
+
+function applyFishChanceMultiplier(
+  probabilities: FishingCategoryProbabilities,
+  multiplier: number,
+): FishingCategoryProbabilities {
+  if (multiplier === 1) {
+    return probabilities;
+  }
+
+  const fish = probabilities.fish * multiplier;
+  const total = fish + probabilities.junk + probabilities.treasure;
+
+  return {
+    fish: fish / total,
+    junk: probabilities.junk / total,
+    treasure: probabilities.treasure / total,
+  };
+}
+
+async function listUserBaitOptions(userId: number) {
+  const [inventoryItems, itemDefinitions] = await Promise.all([listInventoryItems(userId), listItems()]);
+  const baitItemsById = new Map(
+    itemDefinitions
+      .filter((item) => item.type === "bait" && item.status === "active")
+      .map((item) => [item.id, item]),
+  );
+  const baitStacks = inventoryItems.filter((inventoryItem) => baitItemsById.has(inventoryItem.itemId));
+  const baitOptionsByItemId = new Map<
+    string,
+    {
+      itemId: string;
+      name: string;
+      quantity: number;
+      effects: BaitEffects;
+    }
+  >();
+
+  for (const stack of baitStacks) {
+    const item = baitItemsById.get(stack.itemId);
+
+    if (!item) {
+      continue;
+    }
+
+    const existingOption = baitOptionsByItemId.get(item.id);
+    const quantity = (existingOption?.quantity ?? 0) + stack.quantity;
+
+    baitOptionsByItemId.set(item.id, {
+      itemId: item.id,
+      name: item.name,
+      quantity,
+      effects: parseBaitEffects(item.metadata),
+    });
+  }
+
+  return [...baitOptionsByItemId.values()].filter((option) => option.quantity > 0);
+}
+
+async function resolveFishingBait(
+  userId: number,
+  input: FishingActionInput,
+  required: boolean,
+): Promise<null | {
+  itemId: string;
+  name: string;
+  quantity: number;
+  effects: BaitEffects;
+}> {
+  const baitOptions = await listUserBaitOptions(userId);
+  let selectedBait:
+    | {
+        itemId: string;
+        name: string;
+        quantity: number;
+        effects: BaitEffects;
+      }
+    | undefined;
+
+  if (input.baitItemId) {
+    selectedBait = baitOptions.find((bait) => bait.itemId === input.baitItemId);
+  } else if (input.baitName) {
+    const normalizedName = input.baitName.trim().toLowerCase();
+    selectedBait = baitOptions.find((bait) => bait.name.toLowerCase() === normalizedName);
+  } else if (baitOptions.length === 1) {
+    selectedBait = baitOptions[0];
+  } else if (baitOptions.length > 1 && required) {
+    throw new FishingBaitAmbiguousError();
+  }
+
+  if (!selectedBait && required) {
+    if (baitOptions.length === 0) {
+      throw new FishingBaitRequiredError();
+    }
+
+    throw new FishingBaitNotFoundError();
+  }
+
+  return selectedBait ?? null;
+}
+
+async function applyBaitConsumption(
+  userId: number,
+  bait: { itemId: string; name: string; quantity: number; effects: BaitEffects },
+  eventId: FishingRandomEventDefinition["id"] | undefined,
+): Promise<FishingBaitUseResult> {
+  let consumed = 1;
+  let gained = 0;
+
+  if (eventId === "bait_recovered") {
+    consumed = 0;
+  }
+
+  if (eventId === "bait_stolen") {
+    consumed = Math.min(2, bait.quantity);
+  }
+
+  if (consumed > 0) {
+    const removed = await removeItemFromInventory(userId, bait.itemId, consumed);
+
+    if (!removed) {
+      throw new FishingBaitNotFoundError();
+    }
+  }
+
+  if (eventId === "bonus_bait") {
+    gained = 1;
+    await addItemToInventory(userId, bait.itemId, 1);
+  }
+
+  return {
+    itemId: bait.itemId,
+    name: bait.name,
+    effects: bait.effects,
+    consumed,
+    gained,
+  };
+}
+
+async function createFutureFishingModifiersForEvent(
+  userId: number,
+  eventId: FishingRandomEventDefinition["id"] | undefined,
+): Promise<UserActionModifierRow[]> {
+  if (eventId === "favorable_current") {
+    return [
+      await createActionModifier({
+        userId,
+        source: "fishing_random_event:favorable_current",
+        action: "fish",
+        modifierType: "fish_chance_multiplier",
+        payload: {
+          multiplier: 1.2,
+        },
+        remainingUses: 1,
+      }),
+    ];
+  }
+
+  if (eventId === "snagged_rod") {
+    return [
+      await createActionModifier({
+        userId,
+        source: "fishing_random_event:snagged_rod",
+        action: "fish",
+        modifierType: "efficiency_multiplier",
+        payload: {
+          multiplier: 0.8,
+        },
+        remainingUses: 1,
+      }),
+    ];
+  }
+
+  if (eventId === "golden_line") {
+    return [
+      await createActionModifier({
+        userId,
+        source: "fishing_random_event:golden_line",
+        action: "fish",
+        modifierType: "minimum_fish_quality",
+        payload: {
+          quality: "excellent",
+        },
+        remainingUses: 1,
+      }),
+    ];
+  }
+
+  if (eventId === "abyssal_shadow") {
+    return [
+      await createActionModifier({
+        userId,
+        source: "fishing_random_event:abyssal_shadow",
+        action: "fish",
+        modifierType: "rare_fish_weight_bonus",
+        payload: {
+          bonus: 0.8,
+        },
+        remainingUses: 1,
+      }),
+    ];
+  }
+
+  return [];
+}
+
+export async function getFishingProbabilities(
+  userId: number,
+  input: FishingActionInput = {},
+): Promise<FishingProbabilities> {
   const progression = await getUserProgression(userId);
   const levels = getProgressionFishingLevels(progression);
-  const categoryProbabilities = calculateFishingCategoryProbabilities(levels.luckLevel);
+  const bait = await resolveFishingBait(userId, input, false);
+  const activeModifiers = await listActiveActionModifiers(userId, "fish");
+  const actionModifierEffects = getFishingActionModifierEffects(activeModifiers);
+  const baitEffects = bait?.effects ?? {};
+  const categoryProbabilities = applyFishChanceMultiplier(
+    calculateFishingCategoryProbabilities(levels.luckLevel, baitEffects),
+    actionModifierEffects.fishChanceMultiplier,
+  );
+  const combinedBaitEffects = {
+    ...baitEffects,
+    rareFishWeightBonus:
+      (baitEffects.rareFishWeightBonus ?? 0) + actionModifierEffects.rareFishWeightBonus,
+  };
 
   return {
     levels,
+    activeModifiers,
+    bait:
+      bait === null
+        ? null
+        : {
+            itemId: bait.itemId,
+            name: bait.name,
+            effects: bait.effects,
+          },
     categoryProbabilities,
     drops: {
-      fish: calculateDropProbabilitiesForCategory("fish", levels, categoryProbabilities.fish),
-      treasure: calculateDropProbabilitiesForCategory("treasure", levels, categoryProbabilities.treasure),
-      junk: calculateDropProbabilitiesForCategory("junk", levels, categoryProbabilities.junk),
+      fish: calculateDropProbabilitiesForCategory("fish", levels, categoryProbabilities.fish, combinedBaitEffects),
+      treasure: calculateDropProbabilitiesForCategory(
+        "treasure",
+        levels,
+        categoryProbabilities.treasure,
+        combinedBaitEffects,
+      ),
+      junk: calculateDropProbabilitiesForCategory("junk", levels, categoryProbabilities.junk, combinedBaitEffects),
     },
-    fishQualities: calculateFishQualityProbabilities(levels.dexterityLevel, levels.luckLevel),
+    fishQualities: calculateFishQualityProbabilities(
+      levels.dexterityLevel + (baitEffects.qualityLevelBonus ?? 0),
+      levels.luckLevel,
+    ),
     randomEvents: calculateFishingRandomEventProbabilities(levels.luckLevel),
   };
 }
 
-export async function performFishingAction(userId: number, rng: Rng = Math.random): Promise<FishingActionResult> {
-  await ensureFishingItemDefinitions();
-
+export async function performFishingAction(
+  userId: number,
+  input: FishingActionInput = {},
+  rng: Rng = Math.random,
+): Promise<FishingActionResult> {
   const progression = await getUserProgression(userId);
   const { fishingLevel, dexterityLevel, luckLevel } = getProgressionFishingLevels(progression);
-  const categoryProbabilities = calculateFishingCategoryProbabilities(luckLevel);
+  const activeModifiers = await listActiveActionModifiers(userId, "fish");
+  const actionModifierEffects = getFishingActionModifierEffects(activeModifiers);
+  const bait = await resolveFishingBait(userId, input, true);
+
+  if (!bait) {
+    throw new FishingBaitRequiredError();
+  }
+
+  await ensureFishingItemDefinitions();
+
+  const baitEffects = {
+    ...bait.effects,
+    rareFishWeightBonus:
+      (bait.effects.rareFishWeightBonus ?? 0) + actionModifierEffects.rareFishWeightBonus,
+  };
+  const categoryProbabilities = applyFishChanceMultiplier(
+    calculateFishingCategoryProbabilities(luckLevel, baitEffects),
+    actionModifierEffects.fishChanceMultiplier,
+  );
   const randomEventProbabilities = calculateFishingRandomEventProbabilities(luckLevel);
   const randomEvent = pickRandomEvent(randomEventProbabilities, rng);
   const eventId = randomEvent.event?.id;
+  const baitUse = await applyBaitConsumption(userId, bait, eventId);
   const markRandomEventApplied = () => {
     if (randomEvent.occurred) {
       randomEvent.event.effectApplied = true;
@@ -434,27 +826,44 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
   const table = getTableForCategory(category);
   const weightedEntries = table.map((entry) => ({
     value: entry,
-    weight: calculateFishingDropWeight(entry, { fishingLevel, dexterityLevel, luckLevel }),
+    weight: calculateFishingDropWeight(
+      entry,
+      { fishingLevel, dexterityLevel, luckLevel },
+      FISHING_CURVE_WIDTH,
+      baitEffects,
+    ),
   }));
   const pickedEntry = weightedPick(weightedEntries, rng);
   const itemId = getFishingItemId(pickedEntry.value, category);
   let quality: FishQualityDefinition | null = null;
   let fishWeight: ReturnType<typeof rollFishWeight> | null = null;
   let quantity = 1;
-  let xpModifier = 1;
-  let sellModifier = 1;
+  let xpModifier = actionModifierEffects.efficiencyMultiplier;
+  let sellModifier = actionModifierEffects.efficiencyMultiplier;
   let noCatch = false;
   let escaped = false;
 
   if (category === "fish") {
-    quality = weightedPick(calculateFishQualityWeights(dexterityLevel, luckLevel), rng).value;
+    quality = weightedPick(
+      calculateFishQualityWeights(dexterityLevel + (baitEffects.qualityLevelBonus ?? 0), luckLevel),
+      rng,
+    ).value;
 
     if (eventId === "perfect_bite") {
       quality = getMinimumQuality(quality, "good");
       markRandomEventApplied();
     }
 
+    if (actionModifierEffects.minimumQuality) {
+      quality = getMinimumQuality(quality, actionModifierEffects.minimumQuality);
+    }
+
     fishWeight = rollFishWeight(pickedEntry.value, quality, rng);
+    fishWeight = {
+      ...fishWeight,
+      value: Number((fishWeight.value * (baitEffects.fishWeightMultiplier ?? 1)).toFixed(2)),
+      multiplier: Number((fishWeight.multiplier * (baitEffects.fishWeightMultiplier ?? 1)).toFixed(3)),
+    };
   }
 
   if (eventId === "line_snapped") {
@@ -497,7 +906,7 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
   const xpMultiplier = quality?.xpMultiplier ?? 1;
   const sellMultiplier = quality?.sellMultiplier ?? 1;
   const fishWeightMultiplier = fishWeight?.multiplier ?? 1;
-  const baseXpGained = pickedEntry.value.xp * xpMultiplier * xpModifier;
+  const baseXpGained = pickedEntry.value.xp * xpMultiplier * xpModifier * (baitEffects.xpMultiplier ?? 1);
   const xpGained = noCatch && !escaped ? 0 : Math.max(1, Math.round(baseXpGained * (escaped ? 0.25 : 1)));
   const sellValue = noCatch
     ? 0
@@ -539,9 +948,16 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
     skills: rewards.skills,
     attributes: rewards.attributes,
   });
+  await consumeActionModifiers(activeModifiers);
+  const createdActionModifiers = await createFutureFishingModifiersForEvent(userId, eventId);
+
+  if (createdActionModifiers.length > 0) {
+    markRandomEventApplied();
+  }
 
   return {
     outcome: noCatch ? "no_catch" : "caught",
+    bait: baitUse,
     category,
     item:
       noCatch && !escaped
@@ -568,6 +984,10 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
           },
     fishWeight,
     randomEvent,
+    actionModifiers: {
+      applied: activeModifiers,
+      created: createdActionModifiers,
+    },
     inventory,
     resultModifiers: {
       fishingLevel,

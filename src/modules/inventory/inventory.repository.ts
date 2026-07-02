@@ -50,6 +50,17 @@ export class InventoryRepository {
     return rows[0];
   }
 
+  async findById(userId: number, id: number): Promise<UserInventoryItemRow | undefined> {
+    const rows = this.database
+      .select()
+      .from(userInventoryItems)
+      .where(and(eq(userInventoryItems.userId, userId), eq(userInventoryItems.id, id)))
+      .limit(1)
+      .all();
+
+    return rows[0];
+  }
+
   async increaseQuantity(id: number, quantity: number, updatedAt: string): Promise<void> {
     this.database
       .update(userInventoryItems)

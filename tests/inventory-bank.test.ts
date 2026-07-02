@@ -46,6 +46,9 @@ beforeEach(() => {
   databaseClient.db.delete(schema.userSkills).run();
   databaseClient.db.delete(schema.userAttributePoints).run();
   databaseClient.db.delete(schema.userAttributes).run();
+  databaseClient.db.delete(schema.userActionModifiers).run();
+  databaseClient.db.delete(schema.userGuildMemberships).run();
+  databaseClient.db.delete(schema.guilds).run();
   databaseClient.db.delete(schema.items).run();
   databaseClient.db.delete(schema.users).run();
 

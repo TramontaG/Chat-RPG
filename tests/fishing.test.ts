@@ -35,6 +35,9 @@ beforeEach(() => {
   databaseClient.db.delete(schema.userSkills).run();
   databaseClient.db.delete(schema.userAttributePoints).run();
   databaseClient.db.delete(schema.userAttributes).run();
+  databaseClient.db.delete(schema.userActionModifiers).run();
+  databaseClient.db.delete(schema.userGuildMemberships).run();
+  databaseClient.db.delete(schema.guilds).run();
   databaseClient.db.delete(schema.items).run();
   databaseClient.sqlite.exec(`
     DELETE FROM users
@@ -54,6 +57,43 @@ beforeEach(() => {
     })
     .run();
 });
+
+function addBaitToInventory(itemId = "bait_basic_worm", quantity = 1): void {
+  databaseSetup.initializeDatabase();
+  const now = new Date().toISOString();
+
+  databaseClient.db
+    .insert(schema.userInventoryItems)
+    .values({
+      userId: testUserId,
+      itemId,
+      quantity,
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .run();
+}
+
+function getRandomEventRoll(eventId: string): number {
+  const probabilities = fishingService.calculateFishingRandomEventProbabilities(1);
+  let cumulative = probabilities.none;
+  const event = probabilities.events.find((candidate) => candidate.id === eventId);
+
+  if (!event) {
+    throw new Error(`Missing random event: ${eventId}`);
+  }
+
+  for (const candidate of probabilities.events) {
+    if (candidate.id === eventId) {
+      break;
+    }
+
+    cumulative += candidate.rollProbability;
+  }
+
+  return cumulative + event.rollProbability / 2;
+}
 
 describe("fishing", () => {
   test("seeds fishing table items into the items table during database initialization", () => {
@@ -119,8 +159,9 @@ describe("fishing", () => {
   });
 
   test("adds a caught fish with catch metadata and progression rewards", async () => {
+    addBaitToInventory();
     const rngValues = [0.1, 0.1, 0.4, 0.5];
-    const result = await fishingService.performFishingAction(testUserId, () => rngValues.shift() ?? 0.5);
+    const result = await fishingService.performFishingAction(testUserId, {}, () => rngValues.shift() ?? 0.5);
     const inventoryItems = databaseClient.db
       .select()
       .from(schema.userInventoryItems)
@@ -133,9 +174,10 @@ describe("fishing", () => {
     expect(result.quality).not.toBeNull();
     expect(result.fishWeight).not.toBeNull();
     expect(result.progression.skills.fishing?.currentXp).toBe(result.item?.xpGained);
-    expect(inventoryItems).toHaveLength(1);
+    expect(inventoryItems.filter((item) => item.itemId !== "bait_basic_worm")).toHaveLength(1);
 
-    const metadata = JSON.parse(inventoryItems[0]?.metadata ?? "{}") as {
+    const caughtItem = inventoryItems.find((item) => item.itemId !== "bait_basic_worm");
+    const metadata = JSON.parse(caughtItem?.metadata ?? "{}") as {
       source?: string;
       category?: string;
       sellValue?: number;
@@ -149,6 +191,7 @@ describe("fishing", () => {
   });
 
   test("can apply a bad random event that prevents the catch", async () => {
+    addBaitToInventory();
     const probabilities = fishingService.calculateFishingRandomEventProbabilities(1);
     let cumulative = probabilities.none;
     const lineSnapped = probabilities.events.find((event) => event.id === "line_snapped");
@@ -166,7 +209,7 @@ describe("fishing", () => {
     }
 
     const rngValues = [cumulative + lineSnapped.rollProbability / 2, 0.1, 0.1];
-    const result = await fishingService.performFishingAction(testUserId, () => rngValues.shift() ?? 0.5);
+    const result = await fishingService.performFishingAction(testUserId, {}, () => rngValues.shift() ?? 0.5);
     const inventoryItems = databaseClient.db.select().from(schema.userInventoryItems).all();
 
     expect(result.outcome).toBe("no_catch");
@@ -183,5 +226,65 @@ describe("fishing", () => {
       },
     });
     expect(inventoryItems).toHaveLength(0);
+  });
+
+  test("requires bait selection when multiple bait types are in inventory", async () => {
+    addBaitToInventory("bait_basic_worm", 1);
+    addBaitToInventory("bait_golden_corn", 1);
+    const rngValues = [0.1, 0.1, 0.4, 0.5];
+    let ambiguousBaitError: Error | null = null;
+
+    try {
+      await fishingService.performFishingAction(testUserId);
+    } catch (error) {
+      ambiguousBaitError = error as Error;
+    }
+
+    expect(ambiguousBaitError?.message).toContain("Multiple bait types found");
+
+    const result = await fishingService.performFishingAction(
+      testUserId,
+      { baitName: "Milho Dourado" },
+      () => rngValues.shift() ?? 0.5,
+    );
+
+    expect(result.bait).toMatchObject({
+      itemId: "bait_golden_corn",
+      consumed: 1,
+    });
+  });
+
+  test("persists and consumes next-fishing modifiers from random events", async () => {
+    addBaitToInventory("bait_basic_worm", 2);
+    const favorableCurrentRoll = getRandomEventRoll("favorable_current");
+    const firstRngValues = [favorableCurrentRoll, 0.1, 0.1, 0.4, 0.5];
+    const firstResult = await fishingService.performFishingAction(
+      testUserId,
+      {},
+      () => firstRngValues.shift() ?? 0.5,
+    );
+    const probabilitiesWithModifier = await fishingService.getFishingProbabilities(testUserId);
+
+    expect(firstResult.randomEvent).toMatchObject({
+      occurred: true,
+      event: {
+        id: "favorable_current",
+        effectApplied: true,
+      },
+    });
+    expect(firstResult.actionModifiers.created).toHaveLength(1);
+    expect(probabilitiesWithModifier.activeModifiers).toHaveLength(1);
+    expect(probabilitiesWithModifier.categoryProbabilities.fish).toBeGreaterThan(0.9);
+
+    const secondRngValues = [0.1, 0.1, 0.1, 0.4, 0.5];
+    const secondResult = await fishingService.performFishingAction(
+      testUserId,
+      {},
+      () => secondRngValues.shift() ?? 0.5,
+    );
+    const probabilitiesAfterConsumption = await fishingService.getFishingProbabilities(testUserId);
+
+    expect(secondResult.actionModifiers.applied).toHaveLength(1);
+    expect(probabilitiesAfterConsumption.activeModifiers).toHaveLength(0);
   });
 });

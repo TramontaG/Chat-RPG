@@ -1,7 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { addItemToBank, getUserBank, listBankItems } from "../bank/bank.service";
-import { addItemToInventory, listInventoryItems, removeItemFromInventory } from "../inventory/inventory.service";
+import {
+  addItemToBank,
+  BankSlotNotFoundError,
+  depositInventorySlotToBank,
+  getUserBank,
+  InsufficientGoldError,
+  listBankItems,
+  withdrawBankSlotToInventory,
+} from "../bank/bank.service";
+import {
+  addItemToInventory,
+  InventorySlotNotFoundError,
+  listInventoryItems,
+  removeItemFromInventory,
+} from "../inventory/inventory.service";
 import {
   createItem,
   disableItem,
@@ -12,6 +25,22 @@ import {
   listItems,
   updateItem,
 } from "../items/items.service";
+import {
+  createGuild,
+  GuildAlreadyExistsError,
+  GuildNotFoundError,
+  joinGuild,
+  leaveGuild,
+  listGuildMemberships,
+  listGuilds,
+  listUserGuildMemberships,
+} from "../guilds/guilds.service";
+import {
+  buyBaitFromShop,
+  ItemIsNotBaitError,
+  listBaitShopItems,
+  sellInventorySlotToGame,
+} from "../shop/shop.service";
 import {
   createUser,
   deleteUser,
@@ -36,6 +65,25 @@ const userParamsSchema = z.object({
 const userItemParamsSchema = z.object({
   userId: z.coerce.number().int().positive(),
   itemId: z.string().min(1),
+});
+
+const userInventorySlotParamsSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+  inventorySlotId: z.coerce.number().int().positive(),
+});
+
+const userBankSlotParamsSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+  bankSlotId: z.coerce.number().int().positive(),
+});
+
+const guildParamsSchema = z.object({
+  guildId: z.coerce.number().int().positive(),
+});
+
+const userGuildParamsSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+  guildId: z.coerce.number().int().positive(),
 });
 
 const userSkillParamsSchema = z.object({
@@ -125,6 +173,17 @@ const quantityBodySchema = z
   })
   .default({ quantity: 1 });
 
+const createGuildBodySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().default(""),
+});
+
+const guildMembershipBodySchema = z
+  .object({
+    role: z.string().min(1).default("member"),
+  })
+  .default({ role: "member" });
+
 const xpBodySchema = z.object({
   xp: z.coerce.number().int().positive(),
 });
@@ -187,6 +246,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           user,
           progression: await getUserProgression(params.userId),
           inventory: await listInventoryItems(params.userId),
+          bank: await getUserBank(params.userId),
+          guilds: await listUserGuildMemberships(params.userId),
         };
       } catch (error) {
         if (error instanceof UserNotFoundError) {
@@ -333,6 +394,140 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         if (error instanceof UserNotFoundError) {
           return reply.status(404).send({
             message: "User not found.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.get(
+    "/admin/guilds",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async () => {
+      return {
+        guilds: await listGuilds(),
+      };
+    },
+  );
+
+  app.post(
+    "/admin/guilds",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const body = createGuildBodySchema.parse(request.body);
+
+      try {
+        return reply.status(201).send({
+          guild: await createGuild(body),
+        });
+      } catch (error) {
+        if (error instanceof GuildAlreadyExistsError) {
+          return reply.status(409).send({
+            message: "Guild already exists.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.get(
+    "/admin/guilds/:guildId/members",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = guildParamsSchema.parse(request.params);
+
+      try {
+        return {
+          members: await listGuildMemberships(params.guildId),
+        };
+      } catch (error) {
+        if (error instanceof GuildNotFoundError) {
+          return reply.status(404).send({
+            message: "Guild not found.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/admin/users/:userId/guilds/:guildId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userGuildParamsSchema.parse(request.params);
+      const body = guildMembershipBodySchema.parse(request.body ?? {});
+
+      try {
+        await getUser(params.userId);
+        return {
+          membership: await joinGuild(params.userId, params.guildId, body.role),
+          guilds: await listUserGuildMemberships(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof GuildNotFoundError) {
+          return reply.status(404).send({
+            message: "Guild not found.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.delete(
+    "/admin/users/:userId/guilds/:guildId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userGuildParamsSchema.parse(request.params);
+
+      try {
+        await getUser(params.userId);
+        const removed = await leaveGuild(params.userId, params.guildId);
+
+        if (!removed) {
+          return reply.status(404).send({
+            removed: false,
+            reason: "membership_not_found",
+          });
+        }
+
+        return {
+          removed: true,
+          guilds: await listUserGuildMemberships(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof GuildNotFoundError) {
+          return reply.status(404).send({
+            message: "Guild not found.",
           });
         }
 
@@ -549,6 +744,117 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.post(
+    "/admin/users/:userId/shop/sell/inventory-slots/:inventorySlotId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userInventorySlotParamsSchema.parse(request.params);
+      const body = quantityBodySchema.parse(request.body ?? {});
+
+      try {
+        await getUser(params.userId);
+        const result = await sellInventorySlotToGame(
+          params.userId,
+          params.inventorySlotId,
+          body.quantity,
+        );
+
+        if (!result) {
+          return reply.status(409).send({
+            sold: false,
+            reason: "insufficient_quantity",
+          });
+        }
+
+        return {
+          ...result,
+          inventory: await listInventoryItems(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof InventorySlotNotFoundError) {
+          return reply.status(404).send({
+            message: "Inventory slot not found.",
+          });
+        }
+
+        if (error instanceof ItemNotFoundError) {
+          return reply.status(404).send({
+            message: "Item not found.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.get(
+    "/admin/shop/baits",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async () => {
+      return {
+        baits: listBaitShopItems(),
+      };
+    },
+  );
+
+  app.post(
+    "/admin/users/:userId/shop/buy/baits/:itemId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userItemParamsSchema.parse(request.params);
+      const body = quantityBodySchema.parse(request.body ?? {});
+
+      try {
+        await getUser(params.userId);
+        const result = await buyBaitFromShop(params.userId, params.itemId, body.quantity);
+
+        return {
+          ...result,
+          inventory: await listInventoryItems(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof ItemNotFoundError) {
+          return reply.status(404).send({
+            message: "Item not found.",
+          });
+        }
+
+        if (error instanceof ItemIsNotBaitError) {
+          return reply.status(409).send({
+            message: "Item is not bait.",
+          });
+        }
+
+        if (error instanceof InsufficientGoldError) {
+          return reply.status(409).send({
+            message: error.message,
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
   app.get(
     "/admin/users/:userId/bank",
     {
@@ -567,6 +873,120 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         if (error instanceof UserNotFoundError) {
           return reply.status(404).send({
             message: "User not found.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/admin/users/:userId/bank/deposits/inventory-slots/:inventorySlotId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userInventorySlotParamsSchema.parse(request.params);
+      const body = quantityBodySchema.parse(request.body ?? {});
+
+      try {
+        await getUser(params.userId);
+        const deposited = await depositInventorySlotToBank(
+          params.userId,
+          params.inventorySlotId,
+          body.quantity,
+        );
+
+        if (!deposited) {
+          return reply.status(409).send({
+            deposited: false,
+            reason: "slot_not_found_or_insufficient_quantity",
+          });
+        }
+
+        return {
+          deposited: true,
+          bank: await getUserBank(params.userId),
+          bankItems: await listBankItems(params.userId),
+          inventory: await listInventoryItems(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof ItemNotFoundError) {
+          return reply.status(404).send({
+            message: "Item not found.",
+          });
+        }
+
+        if (error instanceof ItemUnavailableError) {
+          return reply.status(409).send({
+            message: "Item is not active.",
+          });
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/admin/users/:userId/bank/withdrawals/bank-slots/:bankSlotId",
+    {
+      preHandler: requireMasterAuth,
+    },
+    async (request, reply) => {
+      const params = userBankSlotParamsSchema.parse(request.params);
+      const body = quantityBodySchema.parse(request.body ?? {});
+
+      try {
+        await getUser(params.userId);
+        const withdrawn = await withdrawBankSlotToInventory(
+          params.userId,
+          params.bankSlotId,
+          body.quantity,
+        );
+
+        if (!withdrawn) {
+          return reply.status(409).send({
+            withdrawn: false,
+            reason: "inventory_full_or_insufficient_quantity",
+          });
+        }
+
+        return {
+          withdrawn: true,
+          bank: await getUserBank(params.userId),
+          bankItems: await listBankItems(params.userId),
+          inventory: await listInventoryItems(params.userId),
+        };
+      } catch (error) {
+        if (error instanceof UserNotFoundError) {
+          return reply.status(404).send({
+            message: "User not found.",
+          });
+        }
+
+        if (error instanceof BankSlotNotFoundError) {
+          return reply.status(404).send({
+            message: "Bank slot not found.",
+          });
+        }
+
+        if (error instanceof ItemNotFoundError) {
+          return reply.status(404).send({
+            message: "Item not found.",
+          });
+        }
+
+        if (error instanceof ItemUnavailableError) {
+          return reply.status(409).send({
+            message: "Item is not active.",
           });
         }
 

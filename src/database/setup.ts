@@ -1,6 +1,7 @@
 import { sqlite } from "./client";
 import { buildProgressionLevelRequirements } from "../modules/progression/progression.constants";
 import { buildFishingItemDefinitions } from "../modules/fishing/fishing.items";
+import { buildBaitItemDefinitions } from "../modules/shop/bait.items";
 
 export function initializeDatabase(): void {
   sqlite.exec("PRAGMA foreign_keys = ON;");
@@ -154,10 +155,57 @@ export function initializeDatabase(): void {
 
     CREATE INDEX IF NOT EXISTS user_bank_items_user_item_idx
       ON user_bank_items(user_id, item_id);
+
+    CREATE TABLE IF NOT EXISTS guilds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_guild_memberships (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      guild_id INTEGER NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      joined_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS user_guild_memberships_user_id_idx
+      ON user_guild_memberships(user_id);
+
+    CREATE INDEX IF NOT EXISTS user_guild_memberships_guild_id_idx
+      ON user_guild_memberships(guild_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS user_guild_memberships_user_guild_idx
+      ON user_guild_memberships(user_id, guild_id);
+
+    CREATE TABLE IF NOT EXISTS user_action_modifiers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      action TEXT NOT NULL,
+      modifier_type TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      remaining_uses INTEGER NOT NULL DEFAULT 1 CHECK (remaining_uses >= 0),
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS user_action_modifiers_user_action_idx
+      ON user_action_modifiers(user_id, action);
   `);
 
   seedProgressionLevelRequirements();
   seedFishingItemDefinitions();
+  seedBaitItemDefinitions();
 }
 
 function seedProgressionLevelRequirements(): void {
@@ -193,6 +241,14 @@ function seedProgressionLevelRequirements(): void {
 }
 
 function seedFishingItemDefinitions(): void {
+  seedItemDefinitions(buildFishingItemDefinitions());
+}
+
+function seedBaitItemDefinitions(): void {
+  seedItemDefinitions(buildBaitItemDefinitions());
+}
+
+function seedItemDefinitions(itemDefinitions: ReturnType<typeof buildFishingItemDefinitions>): void {
   const insertItem = sqlite.prepare(`
     INSERT INTO items (
       id,
@@ -226,7 +282,7 @@ function seedFishingItemDefinitions(): void {
 
   const now = new Date().toISOString();
   const transaction = sqlite.transaction(() => {
-    for (const item of buildFishingItemDefinitions(now)) {
+    for (const item of itemDefinitions) {
       insertItem.run(
         item.id,
         item.name,

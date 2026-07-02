@@ -51,6 +51,9 @@ beforeEach(() => {
   databaseClient.db.delete(schema.userSkills).run();
   databaseClient.db.delete(schema.userAttributePoints).run();
   databaseClient.db.delete(schema.userAttributes).run();
+  databaseClient.db.delete(schema.userActionModifiers).run();
+  databaseClient.db.delete(schema.userGuildMemberships).run();
+  databaseClient.db.delete(schema.guilds).run();
   databaseClient.db.delete(schema.items).run();
   databaseClient.sqlite.exec(`
     DELETE FROM users
@@ -229,6 +232,20 @@ describe("HTTP e2e", () => {
   });
 
   test("applies progression rewards when fishing over HTTP", async () => {
+    databaseSetup.initializeDatabase();
+    const now = new Date().toISOString();
+    databaseClient.db
+      .insert(schema.userInventoryItems)
+      .values({
+        userId: testUserId,
+        itemId: "bait_basic_worm",
+        quantity: 1,
+        metadata: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
     const response = await requestJson(`/players/${testUserId}/actions/fish`, {
       method: "POST",
       headers: {

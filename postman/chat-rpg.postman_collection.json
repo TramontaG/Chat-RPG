@@ -121,8 +121,16 @@
               {
                 "key": "Authorization",
                 "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
               }
             ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"baitItemId\": \"{{baitItemId}}\"\n}"
+            },
             "url": {
               "raw": "{{baseUrl}}/admin/users",
               "host": [
@@ -202,7 +210,7 @@
                 "{{playerId}}"
               ]
             },
-            "description": "Gets a user by id with progression attributes, skills, and inventory. Requires master JWT."
+            "description": "Gets a user by id with progression attributes, skills, inventory, bank balance, and guild memberships. Requires master JWT."
           }
         },
         {
@@ -356,6 +364,134 @@
               ]
             },
             "description": "Deletes a user by id. Requires master JWT."
+          }
+        },
+        {
+          "name": "List guilds",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/guilds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "guilds"
+              ]
+            },
+            "description": "Lists all guilds. Requires master JWT."
+          }
+        },
+        {
+          "name": "Create guild",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{guildName}}\",\n  \"description\": \"Created from Postman.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/guilds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "guilds"
+              ]
+            },
+            "description": "Creates a guild. Requires master JWT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.guild && response.guild.id) {",
+                  "  pm.environment.set('guildId', response.guild.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join guild",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"member\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/guilds/{{guildId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "guilds",
+                "{{guildId}}"
+              ]
+            },
+            "description": "Adds a user to a guild. Users may belong to multiple guilds."
+          }
+        },
+        {
+          "name": "Leave guild",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/guilds/{{guildId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "guilds",
+                "{{guildId}}"
+              ]
+            },
+            "description": "Removes a user from a guild."
           }
         },
         {
@@ -525,7 +661,131 @@
               ]
             },
             "description": "Adds an item to a user's inventory. If the inventory is full, the API returns 409."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.inventory && response.inventory.length > 0) {",
+                  "  pm.environment.set('inventorySlotId', response.inventory[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sell inventory slot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/shop/sell/inventory-slots/{{inventorySlotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "shop",
+                "sell",
+                "inventory-slots",
+                "{{inventorySlotId}}"
+              ]
+            },
+            "description": "Sells a user inventory slot to the game and credits gold to the user's bank."
           }
+        },
+        {
+          "name": "List bait shop",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/shop/baits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "shop",
+                "baits"
+              ]
+            },
+            "description": "Lists buyable fishing baits and their effects."
+          }
+        },
+        {
+          "name": "Buy bait",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/shop/buy/baits/{{baitItemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "shop",
+                "buy",
+                "baits",
+                "{{baitItemId}}"
+              ]
+            },
+            "description": "Buys bait with the user's gold and adds it to inventory."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.inventory && response.inventory.length > 0) {",
+                  "  pm.environment.set('inventorySlotId', response.inventory[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Remove item from user inventory",
@@ -585,6 +845,92 @@
               ]
             },
             "description": "Returns the user's bank gold and banked items. Requires master JWT."
+          }
+        },
+        {
+          "name": "Deposit inventory slot to bank",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/bank/deposits/inventory-slots/{{inventorySlotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "bank",
+                "deposits",
+                "inventory-slots",
+                "{{inventorySlotId}}"
+              ]
+            },
+            "description": "Moves quantity from a specific inventory slot into the user's bank."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.bankItems && response.bankItems.length > 0) {",
+                  "  pm.environment.set('bankSlotId', response.bankItems[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Withdraw bank slot to inventory",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/bank/withdrawals/bank-slots/{{bankSlotId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "bank",
+                "withdrawals",
+                "bank-slots",
+                "{{bankSlotId}}"
+              ]
+            },
+            "description": "Moves quantity from a specific bank slot back into inventory."
           }
         },
         {
@@ -649,7 +995,7 @@
                 "fish"
               ]
             },
-            "description": "Executes the Fishing action for a player. Requires master JWT. The response includes the rolled category, item, quality for fish, fish weight, inventory result, probability modifiers, and progression rewards."
+            "description": "Executes the Fishing action for a player using bait from inventory. If the player has exactly one bait type, baitItemId/baitName may be omitted. Requires master JWT."
           },
           "event": [
             {
@@ -693,7 +1039,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/players/{{playerId}}/actions/fish/probabilities",
+              "raw": "{{baseUrl}}/players/{{playerId}}/actions/fish/probabilities?baitItemId={{baitItemId}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -703,6 +1049,12 @@
                 "actions",
                 "fish",
                 "probabilities"
+              ],
+              "query": [
+                {
+                  "key": "baitItemId",
+                  "value": "{{baitItemId}}"
+                }
               ]
             },
             "description": "Returns Fishing probabilities for the referenced player, including fish/treasure/junk category odds, item odds inside each drop table, fish quality odds, and random event odds after Luck scaling."

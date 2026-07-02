@@ -2,6 +2,7 @@ import { db, sqlite } from "../../database/client";
 import type { NewUserRow, UserRole, UserRow } from "../../database/schema";
 import { UsersRepository } from "../../database/repositories/users.repository";
 import { hashPassword } from "../../shared/security/password";
+import { addGoldToBank } from "../bank/bank.service";
 import { ensureUserProgression } from "../progression/progression.service";
 
 const usersRepository = new UsersRepository(db);
@@ -72,6 +73,10 @@ export async function createUser(input: CreateUserInput): Promise<PublicUser> {
   const createdUser = await usersRepository.create(user);
   await ensureUserProgression(createdUser.id);
 
+  if ((input.role ?? "player") === "player") {
+    await addGoldToBank(createdUser.id, 10);
+  }
+
   return toPublicUser(createdUser);
 }
 
@@ -109,6 +114,8 @@ export async function deleteUser(userId: number): Promise<void> {
   sqlite.exec(`
     DELETE FROM user_bank_items WHERE user_id = ${userId};
     DELETE FROM user_banks WHERE user_id = ${userId};
+    DELETE FROM user_action_modifiers WHERE user_id = ${userId};
+    DELETE FROM user_guild_memberships WHERE user_id = ${userId};
     DELETE FROM user_inventory_slot_bonuses WHERE user_id = ${userId};
     DELETE FROM user_inventory_items WHERE user_id = ${userId};
     DELETE FROM user_skills WHERE user_id = ${userId};

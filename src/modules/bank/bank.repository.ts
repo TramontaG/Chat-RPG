@@ -35,6 +35,17 @@ export class BankRepository {
       .run();
   }
 
+  async spendGold(userId: number, amount: number, updatedAt: string): Promise<void> {
+    this.database
+      .update(userBanks)
+      .set({
+        gold: sql`${userBanks.gold} - ${amount}`,
+        updatedAt,
+      })
+      .where(eq(userBanks.userId, userId))
+      .run();
+  }
+
   async findStack(userId: number, itemId: string): Promise<UserBankItemRow | undefined> {
     const rows = this.database
       .select()
@@ -46,6 +57,17 @@ export class BankRepository {
           isNull(userBankItems.metadata),
         ),
       )
+      .limit(1)
+      .all();
+
+    return rows[0];
+  }
+
+  async findItemById(userId: number, id: number): Promise<UserBankItemRow | undefined> {
+    const rows = this.database
+      .select()
+      .from(userBankItems)
+      .where(and(eq(userBankItems.userId, userId), eq(userBankItems.id, id)))
       .limit(1)
       .all();
 

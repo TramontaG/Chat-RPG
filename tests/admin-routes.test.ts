@@ -51,6 +51,9 @@ beforeEach(() => {
   databaseClient.db.delete(schema.userSkills).run();
   databaseClient.db.delete(schema.userAttributePoints).run();
   databaseClient.db.delete(schema.userAttributes).run();
+  databaseClient.db.delete(schema.userActionModifiers).run();
+  databaseClient.db.delete(schema.userGuildMemberships).run();
+  databaseClient.db.delete(schema.guilds).run();
   databaseClient.db.delete(schema.items).run();
   databaseClient.sqlite.exec(`
     DELETE FROM users
@@ -167,6 +170,7 @@ describe("admin routes", () => {
         skills: Array<{ skill: string }>;
       };
       inventory: unknown[];
+      bank: { userId: number; gold: number };
     }>();
 
     expect(getResponse.statusCode).toBe(200);
@@ -198,6 +202,10 @@ describe("admin routes", () => {
       "woodcutting",
     ]);
     expect(getBody.inventory).toEqual([]);
+    expect(getBody.bank).toMatchObject({
+      userId: createdUser.id,
+      gold: 10,
+    });
 
     const updateResponse = await app.inject({
       method: "PATCH",
@@ -473,5 +481,182 @@ describe("admin routes", () => {
     expect(bankResponse.statusCode).toBe(200);
     expect(bankBody.bank).toMatchObject({ userId: testUserId, gold: 0 });
     expect(bankBody.items).toMatchObject([{ itemId: testItemId, quantity: 5 }]);
+  });
+
+  test("sells an inventory slot to the game and credits player gold", async () => {
+    const authorization = await getMasterAuthorization();
+    await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/inventory/items/${testItemId}`,
+      headers: { authorization },
+      payload: { quantity: 3 },
+    });
+    const inventoryItems = databaseClient.db
+      .select()
+      .from(schema.userInventoryItems)
+      .all();
+    const inventorySlot = inventoryItems[0];
+
+    if (!inventorySlot) {
+      throw new Error("Expected inventory slot.");
+    }
+
+    const sellResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/shop/sell/inventory-slots/${inventorySlot.id}`,
+      headers: { authorization },
+      payload: { quantity: 2 },
+    });
+    const sellBody = sellResponse.json<{
+      sold: boolean;
+      goldGained: number;
+      bank: { gold: number };
+      inventory: Array<{ id: number; quantity: number }>;
+    }>();
+
+    expect(sellResponse.statusCode).toBe(200);
+    expect(sellBody.sold).toBe(true);
+    expect(sellBody.goldGained).toBe(2);
+    expect(sellBody.bank.gold).toBe(2);
+    expect(sellBody.inventory).toMatchObject([{ id: inventorySlot.id, quantity: 1 }]);
+  });
+
+  test("creates a player with starting gold and buys bait from the shop", async () => {
+    const authorization = await getMasterAuthorization();
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/admin/users",
+      headers: { authorization },
+      payload: {
+        username: "bait-buyer",
+        password: "bait-password",
+        role: "player",
+      },
+    });
+    const user = createResponse.json<{ user: { id: number } }>().user;
+    const buyResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${user.id}/shop/buy/baits/bait_basic_worm`,
+      headers: { authorization },
+      payload: {
+        quantity: 10,
+      },
+    });
+    const buyBody = buyResponse.json<{
+      bought: boolean;
+      goldSpent: number;
+      bank: { gold: number };
+      inventory: Array<{ itemId: string; quantity: number }>;
+    }>();
+
+    expect(createResponse.statusCode).toBe(201);
+    expect(buyResponse.statusCode).toBe(200);
+    expect(buyBody.bought).toBe(true);
+    expect(buyBody.goldSpent).toBe(10);
+    expect(buyBody.bank.gold).toBe(0);
+    expect(buyBody.inventory).toMatchObject([{ itemId: "bait_basic_worm", quantity: 10 }]);
+  });
+
+  test("deposits and withdraws items by slot", async () => {
+    const authorization = await getMasterAuthorization();
+    await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/inventory/items/${testItemId}`,
+      headers: { authorization },
+      payload: { quantity: 3 },
+    });
+    const inventorySlot = databaseClient.db.select().from(schema.userInventoryItems).all()[0];
+
+    if (!inventorySlot) {
+      throw new Error("Expected inventory slot.");
+    }
+
+    const depositResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/bank/deposits/inventory-slots/${inventorySlot.id}`,
+      headers: { authorization },
+      payload: { quantity: 2 },
+    });
+    const depositBody = depositResponse.json<{
+      deposited: boolean;
+      bankItems: Array<{ id: number; itemId: string; quantity: number }>;
+      inventory: Array<{ id: number; quantity: number }>;
+    }>();
+    const bankSlot = depositBody.bankItems[0];
+
+    expect(depositResponse.statusCode).toBe(200);
+    expect(depositBody.deposited).toBe(true);
+    expect(depositBody.bankItems).toMatchObject([{ itemId: testItemId, quantity: 2 }]);
+    expect(depositBody.inventory).toMatchObject([{ id: inventorySlot.id, quantity: 1 }]);
+
+    if (!bankSlot) {
+      throw new Error("Expected bank slot.");
+    }
+
+    const withdrawResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/bank/withdrawals/bank-slots/${bankSlot.id}`,
+      headers: { authorization },
+      payload: { quantity: 1 },
+    });
+    const withdrawBody = withdrawResponse.json<{
+      withdrawn: boolean;
+      bankItems: Array<{ id: number; quantity: number }>;
+      inventory: Array<{ itemId: string; quantity: number }>;
+    }>();
+
+    expect(withdrawResponse.statusCode).toBe(200);
+    expect(withdrawBody.withdrawn).toBe(true);
+    expect(withdrawBody.bankItems).toMatchObject([{ id: bankSlot.id, quantity: 1 }]);
+    expect(withdrawBody.inventory).toMatchObject([{ itemId: testItemId, quantity: 2 }]);
+  });
+
+  test("allows a player to belong to multiple guilds", async () => {
+    const authorization = await getMasterAuthorization();
+    const firstGuildResponse = await app.inject({
+      method: "POST",
+      url: "/admin/guilds",
+      headers: { authorization },
+      payload: {
+        name: "Pescadores do Norte",
+        description: "Guild focada em Fishing.",
+      },
+    });
+    const secondGuildResponse = await app.inject({
+      method: "POST",
+      url: "/admin/guilds",
+      headers: { authorization },
+      payload: {
+        name: "Mercadores Livres",
+        description: "Guild de comércio.",
+      },
+    });
+    const firstGuild = firstGuildResponse.json<{ guild: { id: number } }>().guild;
+    const secondGuild = secondGuildResponse.json<{ guild: { id: number } }>().guild;
+
+    const firstJoinResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/guilds/${firstGuild.id}`,
+      headers: { authorization },
+      payload: { role: "member" },
+    });
+    const secondJoinResponse = await app.inject({
+      method: "POST",
+      url: `/admin/users/${testUserId}/guilds/${secondGuild.id}`,
+      headers: { authorization },
+      payload: { role: "trader" },
+    });
+    const secondJoinBody = secondJoinResponse.json<{
+      guilds: Array<{ userId: number; guildId: number; role: string }>;
+    }>();
+
+    expect(firstGuildResponse.statusCode).toBe(201);
+    expect(secondGuildResponse.statusCode).toBe(201);
+    expect(firstJoinResponse.statusCode).toBe(200);
+    expect(secondJoinResponse.statusCode).toBe(200);
+    expect(secondJoinBody.guilds).toHaveLength(2);
+    expect(secondJoinBody.guilds.map((membership) => membership.guildId).sort((first, second) => first - second)).toEqual(
+      [firstGuild.id, secondGuild.id].sort((first, second) => first - second),
+    );
   });
 });

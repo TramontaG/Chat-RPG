@@ -24,6 +24,13 @@ export type AddInventoryItemResult =
       maxSlots: number;
     };
 
+export class InventorySlotNotFoundError extends Error {
+  constructor(slotId: number) {
+    super(`Inventory slot not found: ${slotId}`);
+    this.name = "InventorySlotNotFoundError";
+  }
+}
+
 function assertPositiveQuantity(quantity: number): void {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error("Quantity must be a positive integer.");
@@ -180,6 +187,41 @@ export async function addItemToInventory(
 
 export async function listInventoryItems(userId: number): Promise<UserInventoryItemRow[]> {
   return inventoryRepository.listByUserId(userId);
+}
+
+export async function getInventorySlotOrThrow(
+  userId: number,
+  inventorySlotId: number,
+): Promise<UserInventoryItemRow> {
+  const slot = await inventoryRepository.findById(userId, inventorySlotId);
+
+  if (!slot) {
+    throw new InventorySlotNotFoundError(inventorySlotId);
+  }
+
+  return slot;
+}
+
+export async function removeInventorySlotQuantity(
+  userId: number,
+  inventorySlotId: number,
+  quantity = 1,
+): Promise<UserInventoryItemRow | null> {
+  assertPositiveQuantity(quantity);
+
+  const slot = await inventoryRepository.findById(userId, inventorySlotId);
+
+  if (!slot || slot.quantity < quantity) {
+    return null;
+  }
+
+  if (slot.quantity === quantity) {
+    await inventoryRepository.deleteById(slot.id);
+  } else {
+    await inventoryRepository.decreaseQuantity(slot.id, quantity, new Date().toISOString());
+  }
+
+  return slot;
 }
 
 export async function removeItemFromInventory(
