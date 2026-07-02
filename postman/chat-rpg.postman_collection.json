@@ -669,9 +669,60 @@
                   "pm.test('Response contains fishing result', function () {",
                   "  pm.expect(response.action).to.eql('fish');",
                   "  pm.expect(response.category).to.be.oneOf(['fish', 'junk', 'treasure']);",
-                  "  pm.expect(response.item).to.have.property('id');",
+                  "  pm.expect(response.outcome).to.be.oneOf(['caught', 'no_catch']);",
+                  "  if (response.outcome === 'caught') {",
+                  "    pm.expect(response.item).to.have.property('id');",
+                  "  }",
+                  "  pm.expect(response.randomEvent).to.have.property('occurred');",
                   "  pm.expect(response.inventory).to.have.property('added');",
                   "  pm.expect(response.progression).to.have.property('skills');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fishing probabilities",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/players/{{playerId}}/actions/fish/probabilities",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "players",
+                "{{playerId}}",
+                "actions",
+                "fish",
+                "probabilities"
+              ]
+            },
+            "description": "Returns Fishing probabilities for the referenced player, including fish/treasure/junk category odds, item odds inside each drop table, fish quality odds, and random event odds after Luck scaling."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Fishing probabilities loaded', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const response = pm.response.json();",
+                  "pm.test('Response contains probability tables', function () {",
+                  "  pm.expect(response.probabilities.categoryProbabilities).to.have.property('fish');",
+                  "  pm.expect(response.probabilities.drops.fish).to.be.an('array');",
+                  "  pm.expect(response.probabilities.fishQualities).to.be.an('array');",
+                  "  pm.expect(response.probabilities.randomEvents.events).to.be.an('array');",
                   "});"
                 ]
               }

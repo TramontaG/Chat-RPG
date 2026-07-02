@@ -252,13 +252,19 @@ describe("HTTP e2e", () => {
           junk: number;
           treasure: number;
         };
+        randomEventProbabilities: {
+          none: number;
+          events: unknown[];
+        };
       };
-      item: {
+      outcome: "caught" | "no_catch";
+      item: null | {
         id: string;
         xpGained: number;
         sellValue: number;
       };
-      inventory: { added: boolean; itemId: string };
+      randomEvent: { occurred: boolean };
+      inventory: { added: boolean; itemId: string | null };
     }>();
 
     if (response.status !== 200) {
@@ -272,12 +278,53 @@ describe("HTTP e2e", () => {
       junk: 0.075,
       treasure: 0.025,
     });
-    expect(body.inventory.added).toBe(true);
-    expect(body.inventory.itemId).toBe(body.item.id);
-    expect(body.item.xpGained).toBeGreaterThan(0);
-    expect(body.item.sellValue).toBeGreaterThanOrEqual(0);
-    expect(body.progression.skills.fishing.currentXp).toBe(body.item.xpGained);
-    expect(body.progression.attributes.dexterity.currentXp).toBeGreaterThan(0);
-    expect(body.progression.attributes.luck.currentXp).toBeGreaterThan(0);
+    expect(body.resultModifiers.randomEventProbabilities.events.length).toBeGreaterThan(0);
+
+    if (body.outcome === "caught") {
+      if (!body.item) {
+        throw new Error("Expected caught fishing action to include item.");
+      }
+
+      expect(body.inventory.added).toBe(true);
+      expect(body.inventory.itemId).toBe(body.item.id);
+      expect(body.item.xpGained).toBeGreaterThan(0);
+      expect(body.item.sellValue).toBeGreaterThanOrEqual(0);
+      expect(body.progression.skills.fishing.currentXp).toBe(body.item.xpGained);
+      expect(body.progression.attributes.dexterity.currentXp).toBeGreaterThan(0);
+      expect(body.progression.attributes.luck.currentXp).toBeGreaterThan(0);
+    } else {
+      expect(body.inventory.added).toBe(false);
+      expect(body.inventory.itemId).toBeNull();
+    }
+  });
+
+  test("returns fishing probabilities over HTTP", async () => {
+    const response = await requestJson(`/players/${testUserId}/actions/fish/probabilities`, {
+      method: "GET",
+      headers: {
+        Authorization: getMasterAuthorization(),
+      },
+    });
+    const body = response.json<{
+      probabilities: {
+        categoryProbabilities: { fish: number; junk: number; treasure: number };
+        drops: { fish: unknown[]; treasure: unknown[]; junk: unknown[] };
+        fishQualities: unknown[];
+        randomEvents: { none: number; events: unknown[] };
+      };
+    }>();
+
+    expect(response.status).toBe(200);
+    expect(body.probabilities.categoryProbabilities).toEqual({
+      fish: 0.9,
+      junk: 0.075,
+      treasure: 0.025,
+    });
+    expect(body.probabilities.drops.fish).toHaveLength(14);
+    expect(body.probabilities.drops.treasure).toHaveLength(8);
+    expect(body.probabilities.drops.junk).toHaveLength(8);
+    expect(body.probabilities.fishQualities).toHaveLength(6);
+    expect(body.probabilities.randomEvents.events).toHaveLength(20);
+    expect(body.probabilities.randomEvents.none).toBeGreaterThanOrEqual(0);
   });
 });

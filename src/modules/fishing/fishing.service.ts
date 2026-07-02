@@ -7,6 +7,11 @@ import {
 } from "../progression/progression.service";
 import { buildFishingItemDefinitions, getFishingItemId } from "./fishing.items";
 import {
+  FISHING_RANDOM_EVENTS,
+  type FishingRandomEventDefinition,
+  type FishingRandomEventProbability,
+} from "./fishing.random-events";
+import {
   FISHING_FISH_TABLE,
   FISHING_JUNK_TABLE,
   FISHING_TREASURE_TABLE,
@@ -25,9 +30,82 @@ type WeightedOption<T> = {
 
 export type FishingCategoryProbabilities = Record<FishingDropCategory, number>;
 
-export type FishingActionResult = {
+type FishingLevels = {
+  fishingLevel: number;
+  dexterityLevel: number;
+  luckLevel: number;
+};
+
+type FishingInventoryResult =
+  | AddInventoryItemResult
+  | {
+      added: false;
+      reason: "no_catch";
+      itemId: null;
+      quantity: 0;
+      occupiedSlots: null;
+      maxSlots: null;
+    };
+
+export type FishingRandomEventResult =
+  | {
+      occurred: false;
+      event: null;
+    }
+  | {
+      occurred: true;
+      event: {
+        id: FishingRandomEventDefinition["id"];
+        name: string;
+        type: FishingRandomEventDefinition["type"];
+        effect: string;
+        baseChance: number;
+        luckScaling: number;
+        effectiveChance: number;
+        rollProbability: number;
+        effectApplied: boolean;
+      };
+    };
+
+export type FishingDropProbability = {
+  itemId: string;
+  name: string;
   category: FishingDropCategory;
-  item: {
+  targetLevel: number;
+  baseWeight: number;
+  effectiveWeight: number;
+  probabilityWithinCategory: number;
+  probabilityPerFishingAttempt: number;
+};
+
+export type FishingQualityProbability = {
+  quality: FishQualityDefinition["quality"];
+  label: string;
+  xpMultiplier: number;
+  sellMultiplier: number;
+  effectiveWeight: number;
+  probability: number;
+};
+
+export type FishingProbabilities = {
+  levels: FishingLevels;
+  categoryProbabilities: FishingCategoryProbabilities;
+  drops: {
+    fish: FishingDropProbability[];
+    treasure: FishingDropProbability[];
+    junk: FishingDropProbability[];
+  };
+  fishQualities: FishingQualityProbability[];
+  randomEvents: {
+    none: number;
+    events: FishingRandomEventProbability[];
+  };
+};
+
+export type FishingActionResult = {
+  outcome: "caught" | "no_catch";
+  category: FishingDropCategory;
+  item: null | {
     id: string;
     name: string;
     targetLevel: number;
@@ -49,12 +127,14 @@ export type FishingActionResult = {
     unit: "kg";
     multiplier: number;
   };
-  inventory: AddInventoryItemResult;
+  randomEvent: FishingRandomEventResult;
+  inventory: FishingInventoryResult;
   resultModifiers: {
     fishingLevel: number;
     dexterityLevel: number;
     luckLevel: number;
     categoryProbabilities: FishingCategoryProbabilities;
+    randomEventProbabilities: FishingProbabilities["randomEvents"];
     curveWidth: number;
   };
   progression: AppliedActionProgressionRewards;
@@ -103,6 +183,28 @@ export function calculateFishingCategoryProbabilities(luckLevel: number): Fishin
   };
 }
 
+export function calculateFishingRandomEventProbabilities(luckLevel: number): FishingProbabilities["randomEvents"] {
+  const eventsWithEffectiveChance = FISHING_RANDOM_EVENTS.map((event) => ({
+    ...event,
+    effectiveChance: clamp(event.baseChance + event.luckScaling * luckLevel, 0, 1),
+    rollProbability: 0,
+  }));
+  const totalEffectiveChance = eventsWithEffectiveChance.reduce(
+    (sum, event) => sum + event.effectiveChance,
+    0,
+  );
+  const normalizer = Math.max(1, totalEffectiveChance);
+  const events = eventsWithEffectiveChance.map((event) => ({
+    ...event,
+    rollProbability: event.effectiveChance / normalizer,
+  }));
+
+  return {
+    none: Math.max(0, 1 - totalEffectiveChance),
+    events,
+  };
+}
+
 export function calculateFishingDropWeight(
   entry: FishingDropEntry,
   levels: { fishingLevel: number; dexterityLevel: number; luckLevel: number },
@@ -119,6 +221,51 @@ export function calculateFishingDropWeight(
     MIN_WEIGHT,
     entry.baseWeight * neverImpossibleCurveFactor * (1 + dexterityBonus + luckBonus),
   );
+}
+
+function calculateDropProbabilitiesForCategory(
+  category: FishingDropCategory,
+  levels: FishingLevels,
+  categoryProbability: number,
+): FishingDropProbability[] {
+  const table = getTableForCategory(category);
+  const weightedEntries = table.map((entry) => ({
+    entry,
+    weight: calculateFishingDropWeight(entry, levels),
+  }));
+  const totalWeight = weightedEntries.reduce((sum, entry) => sum + entry.weight, 0);
+
+  return weightedEntries.map(({ entry, weight }) => {
+    const probabilityWithinCategory = totalWeight <= 0 ? 0 : weight / totalWeight;
+
+    return {
+      itemId: getFishingItemId(entry, category),
+      name: entry.item,
+      category,
+      targetLevel: entry.targetLevel,
+      baseWeight: entry.baseWeight,
+      effectiveWeight: Number(weight.toFixed(6)),
+      probabilityWithinCategory,
+      probabilityPerFishingAttempt: categoryProbability * probabilityWithinCategory,
+    };
+  });
+}
+
+function calculateFishQualityProbabilities(
+  dexterityLevel: number,
+  luckLevel: number,
+): FishingQualityProbability[] {
+  const weights = calculateFishQualityWeights(dexterityLevel, luckLevel);
+  const totalWeight = weights.reduce((sum, quality) => sum + quality.weight, 0);
+
+  return weights.map(({ value, weight }) => ({
+    quality: value.quality,
+    label: value.label,
+    xpMultiplier: value.xpMultiplier,
+    sellMultiplier: value.sellMultiplier,
+    effectiveWeight: Number(weight.toFixed(6)),
+    probability: totalWeight <= 0 ? 0 : weight / totalWeight,
+  }));
 }
 
 export function calculateFishQualityWeights(
@@ -177,6 +324,42 @@ function pickCategory(probabilities: FishingCategoryProbabilities, rng: Rng): Fi
   return weightedPick(categories, rng).value;
 }
 
+function pickRandomEvent(
+  probabilities: FishingProbabilities["randomEvents"],
+  rng: Rng,
+): FishingRandomEventResult {
+  const options: WeightedOption<FishingRandomEventProbability | null>[] = [
+    { value: null, weight: probabilities.none },
+    ...probabilities.events.map((event) => ({
+      value: event,
+      weight: event.rollProbability,
+    })),
+  ];
+  const picked = weightedPick(options, rng).value;
+
+  if (picked === null) {
+    return {
+      occurred: false,
+      event: null,
+    };
+  }
+
+  return {
+    occurred: true,
+    event: {
+      id: picked.id,
+      name: picked.name,
+      type: picked.type,
+      effect: picked.effect,
+      baseChance: picked.baseChance,
+      luckScaling: picked.luckScaling,
+      effectiveChance: picked.effectiveChance,
+      rollProbability: picked.rollProbability,
+      effectApplied: false,
+    },
+  };
+}
+
 function rollFishWeight(entry: FishingDropEntry, quality: FishQualityDefinition, rng: Rng) {
   const targetLevelWeightBonus = 1 + entry.targetLevel / 150;
   const qualityWeightBonus = 1 + FISH_QUALITIES.indexOf(quality) * 0.09;
@@ -190,16 +373,64 @@ function rollFishWeight(entry: FishingDropEntry, quality: FishQualityDefinition,
   };
 }
 
+function getMinimumQuality(
+  quality: FishQualityDefinition,
+  minimumQuality: FishQualityDefinition["quality"],
+): FishQualityDefinition {
+  const currentIndex = FISH_QUALITIES.findIndex((candidate) => candidate.quality === quality.quality);
+  const minimumIndex = FISH_QUALITIES.findIndex((candidate) => candidate.quality === minimumQuality);
+
+  return currentIndex >= minimumIndex ? quality : FISH_QUALITIES[minimumIndex] ?? quality;
+}
+
+function getProgressionFishingLevels(progression: Awaited<ReturnType<typeof getUserProgression>>): FishingLevels {
+  return {
+    fishingLevel: progression.skills.find((skill) => skill.skill === "fishing")?.level ?? 1,
+    dexterityLevel:
+      progression.attributes.find((attribute) => attribute.attribute === "dexterity")?.level ?? 1,
+    luckLevel: progression.attributes.find((attribute) => attribute.attribute === "luck")?.level ?? 1,
+  };
+}
+
+export async function getFishingProbabilities(userId: number): Promise<FishingProbabilities> {
+  const progression = await getUserProgression(userId);
+  const levels = getProgressionFishingLevels(progression);
+  const categoryProbabilities = calculateFishingCategoryProbabilities(levels.luckLevel);
+
+  return {
+    levels,
+    categoryProbabilities,
+    drops: {
+      fish: calculateDropProbabilitiesForCategory("fish", levels, categoryProbabilities.fish),
+      treasure: calculateDropProbabilitiesForCategory("treasure", levels, categoryProbabilities.treasure),
+      junk: calculateDropProbabilitiesForCategory("junk", levels, categoryProbabilities.junk),
+    },
+    fishQualities: calculateFishQualityProbabilities(levels.dexterityLevel, levels.luckLevel),
+    randomEvents: calculateFishingRandomEventProbabilities(levels.luckLevel),
+  };
+}
+
 export async function performFishingAction(userId: number, rng: Rng = Math.random): Promise<FishingActionResult> {
   await ensureFishingItemDefinitions();
 
   const progression = await getUserProgression(userId);
-  const fishingLevel = progression.skills.find((skill) => skill.skill === "fishing")?.level ?? 1;
-  const dexterityLevel =
-    progression.attributes.find((attribute) => attribute.attribute === "dexterity")?.level ?? 1;
-  const luckLevel = progression.attributes.find((attribute) => attribute.attribute === "luck")?.level ?? 1;
+  const { fishingLevel, dexterityLevel, luckLevel } = getProgressionFishingLevels(progression);
   const categoryProbabilities = calculateFishingCategoryProbabilities(luckLevel);
-  const category = pickCategory(categoryProbabilities, rng);
+  const randomEventProbabilities = calculateFishingRandomEventProbabilities(luckLevel);
+  const randomEvent = pickRandomEvent(randomEventProbabilities, rng);
+  const eventId = randomEvent.event?.id;
+  const markRandomEventApplied = () => {
+    if (randomEvent.occurred) {
+      randomEvent.event.effectApplied = true;
+    }
+  };
+  let category = pickCategory(categoryProbabilities, rng);
+
+  if (eventId === "junk_on_hook") {
+    category = "junk";
+    markRandomEventApplied();
+  }
+
   const table = getTableForCategory(category);
   const weightedEntries = table.map((entry) => ({
     value: entry,
@@ -209,50 +440,123 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
   const itemId = getFishingItemId(pickedEntry.value, category);
   let quality: FishQualityDefinition | null = null;
   let fishWeight: ReturnType<typeof rollFishWeight> | null = null;
+  let quantity = 1;
+  let xpModifier = 1;
+  let sellModifier = 1;
+  let noCatch = false;
+  let escaped = false;
 
   if (category === "fish") {
     quality = weightedPick(calculateFishQualityWeights(dexterityLevel, luckLevel), rng).value;
+
+    if (eventId === "perfect_bite") {
+      quality = getMinimumQuality(quality, "good");
+      markRandomEventApplied();
+    }
+
     fishWeight = rollFishWeight(pickedEntry.value, quality, rng);
+  }
+
+  if (eventId === "line_snapped") {
+    noCatch = true;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "fish_escaped") {
+    noCatch = true;
+    escaped = true;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "sudden_storm") {
+    xpModifier *= 0.5;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "crystal_clear_water") {
+    xpModifier *= 1.25;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "lake_blessing") {
+    xpModifier *= 2;
+    sellModifier *= 2;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "big_fish" && category === "fish") {
+    sellModifier *= 1.3;
+    markRandomEventApplied();
+  }
+
+  if (eventId === "double_fish" && category === "fish") {
+    quantity = 2;
+    markRandomEventApplied();
   }
 
   const xpMultiplier = quality?.xpMultiplier ?? 1;
   const sellMultiplier = quality?.sellMultiplier ?? 1;
   const fishWeightMultiplier = fishWeight?.multiplier ?? 1;
-  const xpGained = Math.max(1, Math.round(pickedEntry.value.xp * xpMultiplier));
-  const sellValue = Math.max(0, Math.round(pickedEntry.value.sellValue * sellMultiplier * fishWeightMultiplier));
-  const inventory = await addItemToInventory(userId, itemId, 1, {
-    source: "fishing",
-    category,
-    quality: quality?.quality ?? null,
-    qualityLabel: quality?.label ?? null,
-    fishWeight,
-    sellValue,
-    xpGained,
-    caughtAt: new Date().toISOString(),
-  });
+  const baseXpGained = pickedEntry.value.xp * xpMultiplier * xpModifier;
+  const xpGained = noCatch && !escaped ? 0 : Math.max(1, Math.round(baseXpGained * (escaped ? 0.25 : 1)));
+  const sellValue = noCatch
+    ? 0
+    : Math.max(
+        0,
+        Math.round(pickedEntry.value.sellValue * sellMultiplier * fishWeightMultiplier * sellModifier),
+      );
+  const inventory: FishingInventoryResult = noCatch
+    ? {
+        added: false,
+        reason: "no_catch",
+        itemId: null,
+        quantity: 0,
+        occupiedSlots: null,
+        maxSlots: null,
+      }
+    : await addItemToInventory(userId, itemId, quantity, {
+        source: "fishing",
+        category,
+        quality: quality?.quality ?? null,
+        qualityLabel: quality?.label ?? null,
+        fishWeight,
+        sellValue,
+        xpGained,
+        randomEvent: randomEvent.event,
+        caughtAt: new Date().toISOString(),
+      });
+  const rewards = {
+    skills: xpGained > 0 ? { fishing: xpGained } : {},
+    attributes:
+      xpGained > 0
+        ? {
+            dexterity: category === "fish" ? Math.max(1, Math.round(xpGained * 0.2)) : 1,
+            luck: category === "treasure" ? Math.max(1, Math.round(xpGained * 0.1)) : 1,
+          }
+        : {},
+  };
   const progressionRewards = await applyActionProgressionRewards(userId, {
-    skills: {
-      fishing: xpGained,
-    },
-    attributes: {
-      dexterity: category === "fish" ? Math.max(1, Math.round(xpGained * 0.2)) : 1,
-      luck: category === "treasure" ? Math.max(1, Math.round(xpGained * 0.1)) : 1,
-    },
+    skills: rewards.skills,
+    attributes: rewards.attributes,
   });
 
   return {
+    outcome: noCatch ? "no_catch" : "caught",
     category,
-    item: {
-      id: itemId,
-      name: pickedEntry.value.item,
-      targetLevel: pickedEntry.value.targetLevel,
-      baseXp: pickedEntry.value.xp,
-      xpGained,
-      baseSellValue: pickedEntry.value.sellValue,
-      sellValue,
-      baseWeight: pickedEntry.value.baseWeight,
-      effectiveWeight: Number(pickedEntry.weight.toFixed(6)),
-    },
+    item:
+      noCatch && !escaped
+        ? null
+        : {
+            id: itemId,
+            name: pickedEntry.value.item,
+            targetLevel: pickedEntry.value.targetLevel,
+            baseXp: pickedEntry.value.xp,
+            xpGained,
+            baseSellValue: pickedEntry.value.sellValue,
+            sellValue,
+            baseWeight: pickedEntry.value.baseWeight,
+            effectiveWeight: Number(pickedEntry.weight.toFixed(6)),
+          },
     quality:
       quality === null
         ? null
@@ -263,12 +567,14 @@ export async function performFishingAction(userId: number, rng: Rng = Math.rando
             sellMultiplier: quality.sellMultiplier,
           },
     fishWeight,
+    randomEvent,
     inventory,
     resultModifiers: {
       fishingLevel,
       dexterityLevel,
       luckLevel,
       categoryProbabilities,
+      randomEventProbabilities,
       curveWidth: FISHING_CURVE_WIDTH,
     },
     progression: progressionRewards,

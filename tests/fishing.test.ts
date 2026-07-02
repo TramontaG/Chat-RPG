@@ -89,6 +89,16 @@ describe("fishing", () => {
     expect(highLuck.fish + highLuck.junk + highLuck.treasure).toBeCloseTo(1, 10);
   });
 
+  test("calculates random event probability with luck scaling", () => {
+    const probabilities = fishingService.calculateFishingRandomEventProbabilities(15);
+    const lineSnapped = probabilities.events.find((event) => event.id === "line_snapped");
+    const bonusBait = probabilities.events.find((event) => event.id === "bonus_bait");
+
+    expect(lineSnapped?.effectiveChance).toBeCloseTo(0.0395, 8);
+    expect(bonusBait?.effectiveChance).toBeCloseTo(0.145, 8);
+    expect(probabilities.none).toBeGreaterThanOrEqual(0);
+  });
+
   test("drop weights stay non-zero even when player level is far from target level", () => {
     const weight = fishingService.calculateFishingDropWeight(
       {
@@ -117,10 +127,12 @@ describe("fishing", () => {
       .all();
 
     expect(result.category).toBe("fish");
+    expect(result.outcome).toBe("caught");
+    expect(result.item).not.toBeNull();
     expect(result.inventory.added).toBe(true);
     expect(result.quality).not.toBeNull();
     expect(result.fishWeight).not.toBeNull();
-    expect(result.progression.skills.fishing?.currentXp).toBe(result.item.xpGained);
+    expect(result.progression.skills.fishing?.currentXp).toBe(result.item?.xpGained);
     expect(inventoryItems).toHaveLength(1);
 
     const metadata = JSON.parse(inventoryItems[0]?.metadata ?? "{}") as {
@@ -132,7 +144,44 @@ describe("fishing", () => {
 
     expect(metadata.source).toBe("fishing");
     expect(metadata.category).toBe("fish");
-    expect(metadata.sellValue).toBe(result.item.sellValue);
+    expect(metadata.sellValue).toBe(result.item?.sellValue);
     expect(metadata.quality).toBe(result.quality?.value);
+  });
+
+  test("can apply a bad random event that prevents the catch", async () => {
+    const probabilities = fishingService.calculateFishingRandomEventProbabilities(1);
+    let cumulative = probabilities.none;
+    const lineSnapped = probabilities.events.find((event) => event.id === "line_snapped");
+
+    if (!lineSnapped) {
+      throw new Error("Missing line_snapped random event.");
+    }
+
+    for (const event of probabilities.events) {
+      if (event.id === "line_snapped") {
+        break;
+      }
+
+      cumulative += event.rollProbability;
+    }
+
+    const rngValues = [cumulative + lineSnapped.rollProbability / 2, 0.1, 0.1];
+    const result = await fishingService.performFishingAction(testUserId, () => rngValues.shift() ?? 0.5);
+    const inventoryItems = databaseClient.db.select().from(schema.userInventoryItems).all();
+
+    expect(result.outcome).toBe("no_catch");
+    expect(result.item).toBeNull();
+    expect(result.inventory).toMatchObject({
+      added: false,
+      reason: "no_catch",
+    });
+    expect(result.randomEvent).toMatchObject({
+      occurred: true,
+      event: {
+        id: "line_snapped",
+        effectApplied: true,
+      },
+    });
+    expect(inventoryItems).toHaveLength(0);
   });
 });
