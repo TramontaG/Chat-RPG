@@ -7,6 +7,7 @@ import { hashPassword, verifyPassword } from "../../shared/security/password";
 import { MASTER_USERNAME } from "./auth.constants";
 import { InvalidCredentialsError } from "./auth.errors";
 import { UsersRepository } from "../../database/repositories/users.repository";
+import { createUser, UsernameAlreadyExistsError } from "../users/users.service";
 
 const usersRepository = new UsersRepository(db);
 
@@ -70,4 +71,46 @@ export async function loginUser(username: string, password: string): Promise<{
       role: user.role,
     },
   };
+}
+
+export async function signupUser(username: string, password: string): Promise<{
+  token: string;
+  tokenType: "Bearer";
+  expiresAt: null;
+  user: {
+    id: number;
+    username: string;
+    role: "player";
+  };
+}> {
+  try {
+    const user = await createUser({
+      username,
+      password,
+      role: "player",
+    });
+
+    const tokenPayload: Omit<AuthTokenPayload, "iat"> = {
+      sub: String(user.id),
+      role: "player",
+      username: user.username,
+    };
+
+    return {
+      token: signJwt(tokenPayload, env.JWT_SECRET),
+      tokenType: "Bearer",
+      expiresAt: null,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: "player",
+      },
+    };
+  } catch (error) {
+    if (error instanceof UsernameAlreadyExistsError) {
+      throw error;
+    }
+
+    throw error;
+  }
 }

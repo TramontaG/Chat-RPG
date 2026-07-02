@@ -27,6 +27,47 @@
       "name": "Auth",
       "item": [
         {
+          "name": "Signup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{newUsername}}\",\n  \"password\": \"{{newPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Creates a player account and returns a player JWT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.user && response.user.id) {",
+                  "  pm.environment.set('playerId', response.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Login",
           "request": {
             "method": "POST",
@@ -70,10 +111,33 @@
       ]
     },
     {
-      "name": "Players",
+      "name": "Admin",
       "item": [
         {
-          "name": "Fish as master",
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Lists all users. Requires master JWT."
+          }
+        },
+        {
+          "name": "Create user",
           "request": {
             "method": "POST",
             "header": [
@@ -84,6 +148,493 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{newUsername}}\",\n  \"password\": \"{{newPassword}}\",\n  \"role\": \"player\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Creates a user. Requires master JWT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const response = pm.response.json();",
+                  "if (response && response.user && response.user.id) {",
+                  "  pm.environment.set('playerId', response.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get user",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}"
+              ]
+            },
+            "description": "Gets a user by id with progression attributes, skills, and inventory. Requires master JWT."
+          }
+        },
+        {
+          "name": "Get user progression",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/progression",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "progression"
+              ]
+            },
+            "description": "Gets a user's attributes and skills. Requires master JWT."
+          }
+        },
+        {
+          "name": "Add skill XP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"xp\": {{xp}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/progression/skills/{{skill}}/xp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "progression",
+                "skills",
+                "{{skill}}",
+                "xp"
+              ]
+            },
+            "description": "Adds XP to a user's skill and returns the recalculated progression. Requires master JWT."
+          }
+        },
+        {
+          "name": "Spend attribute points",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"levels\": {{attributeLevels}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/progression/attributes/{{attribute}}/points",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "progression",
+                "attributes",
+                "{{attribute}}",
+                "points"
+              ]
+            },
+            "description": "Spends earned attribute points to raise one of the user's attributes. Cost is the target level for each purchased level. Requires master JWT."
+          }
+        },
+        {
+          "name": "Update user",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{newUsername}}-updated\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}"
+              ]
+            },
+            "description": "Updates a user by id. Requires master JWT."
+          }
+        },
+        {
+          "name": "Delete user",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}"
+              ]
+            },
+            "description": "Deletes a user by id. Requires master JWT."
+          }
+        },
+        {
+          "name": "List items",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "items"
+              ]
+            },
+            "description": "Lists all item definitions. Requires master JWT."
+          }
+        },
+        {
+          "name": "Create item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{itemId}}\",\n  \"name\": \"{{itemName}}\",\n  \"description\": \"Created from Postman.\",\n  \"category\": \"material\",\n  \"type\": \"fish\",\n  \"rarity\": \"common\",\n  \"stackable\": true,\n  \"maxStack\": null,\n  \"baseValue\": 1,\n  \"metadata\": {\n    \"source\": \"postman\"\n  },\n  \"status\": \"active\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "items"
+              ]
+            },
+            "description": "Creates an item definition. Requires master JWT."
+          }
+        },
+        {
+          "name": "Get item",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Gets an item definition by id. Requires master JWT."
+          }
+        },
+        {
+          "name": "Update item",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{itemName}} updated\",\n  \"baseValue\": 5,\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"updated\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Updates an item definition by id. Requires master JWT."
+          }
+        },
+        {
+          "name": "Delete item",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Soft-deletes an item by setting status to disabled. Requires master JWT."
+          }
+        },
+        {
+          "name": "Add item to user inventory",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/inventory/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "inventory",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Adds an item to a user's inventory. If the inventory is full, the API returns 409."
+          }
+        },
+        {
+          "name": "Remove item from user inventory",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/inventory/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "inventory",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Removes an item from a user's inventory. Requires master JWT."
+          }
+        },
+        {
+          "name": "Get user bank",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/bank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "bank"
+              ]
+            },
+            "description": "Returns the user's bank gold and banked items. Requires master JWT."
+          }
+        },
+        {
+          "name": "Add item to user bank",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": {{quantity}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{playerId}}/bank/items/{{itemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{playerId}}",
+                "bank",
+                "items",
+                "{{itemId}}"
+              ]
+            },
+            "description": "Adds an item directly to the user's bank. Requires master JWT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Players",
+      "item": [
+        {
+          "name": "Fish",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{masterToken}}"
               }
             ],
             "url": {
@@ -98,8 +649,34 @@
                 "fish"
               ]
             },
-            "description": "Protected endpoint that executes an action in behalf of a player."
-          }
+            "description": "Executes the Fishing action for a player. Requires master JWT. The response includes the rolled category, item, quality for fish, fish weight, inventory result, probability modifiers, and progression rewards."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Fishing action succeeded', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const response = pm.response.json();",
+                  "if (response && response.item && response.item.id) {",
+                  "  pm.environment.set('lastFishingItemId', response.item.id);",
+                  "}",
+                  "",
+                  "pm.test('Response contains fishing result', function () {",
+                  "  pm.expect(response.action).to.eql('fish');",
+                  "  pm.expect(response.category).to.be.oneOf(['fish', 'junk', 'treasure']);",
+                  "  pm.expect(response.item).to.have.property('id');",
+                  "  pm.expect(response.inventory).to.have.property('added');",
+                  "  pm.expect(response.progression).to.have.property('skills');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

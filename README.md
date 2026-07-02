@@ -17,6 +17,7 @@ O backend expõe `POST /auth/login` para autenticar usuários do banco. O master
 Env vars necessárias:
 
 ```bash
+LOG_LEVEL=info
 PORT=3000
 DATABASE_PATH=./data/chat-rpg.sqlite
 JWT_SECRET=change-this-to-a-long-random-secret

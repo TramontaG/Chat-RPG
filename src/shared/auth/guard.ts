@@ -1,4 +1,4 @@
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { HookHandlerDoneFunction, FastifyReply, FastifyRequest } from "fastify";
 import { env } from "../../config/env";
 import { verifyJwt } from "./jwt";
 import { MASTER_USERNAME } from "../../modules/auth/auth.constants";
@@ -17,30 +17,34 @@ function readBearerToken(authorizationHeader: string | undefined): string | null
   return token;
 }
 
-export async function requireMasterAuth(
+export function requireMasterAuth(
   request: FastifyRequest,
   reply: FastifyReply,
-): Promise<void | FastifyReply> {
+  done: HookHandlerDoneFunction,
+): void {
   const token = readBearerToken(request.headers.authorization);
 
   if (!token) {
-    return reply.status(401).send({
+    reply.status(401).send({
       message: "Missing bearer token.",
     });
+    return;
   }
 
   try {
     const payload = verifyJwt<AuthTokenPayload>(token, env.JWT_SECRET);
 
     if (payload.role !== "master" || payload.username !== MASTER_USERNAME) {
-      return reply.status(401).send({
+      reply.status(401).send({
         message: "Master token required.",
       });
+      return;
     }
 
     request.masterAuth = payload;
+    done();
   } catch {
-    return reply.status(401).send({
+    reply.status(401).send({
       message: "Invalid or expired token.",
     });
   }
