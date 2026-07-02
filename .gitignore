@@ -103,6 +103,9 @@ web_modules/
 .env*
 !.env.example
 
+# Local Postman environments may contain secrets
+postman/*environment*.json
+
 # Local databases and runtime state
 
 data/*.sqlite
